@@ -478,13 +478,14 @@ def _summarize_control(
         counts = {
             key: len(value.get(key) or [])
             for key in (
-                "EventBridgeConfiguration",
                 "LambdaFunctionConfigurations",
                 "QueueConfigurations",
                 "TopicConfigurations",
             )
             if value.get(key)
         }
+        if "EventBridgeConfiguration" in value:
+            counts["EventBridgeConfiguration"] = 1
         return bool(counts), {"configuration_counts": counts}
     if name == "object_lock":
         enabled = value.get("ObjectLockEnabled") == "Enabled"

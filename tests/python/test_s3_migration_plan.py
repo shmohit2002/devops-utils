@@ -229,11 +229,10 @@ class FixtureAwsRunner:
                     {"Grantee": {"Type": "CanonicalUser"}, "Permission": "FULL_CONTROL"},
                 ]
             }
-        if operation in {
-            "get-bucket-logging",
-            "get-bucket-notification-configuration",
-        }:
+        if operation == "get-bucket-logging":
             return {}
+        if operation == "get-bucket-notification-configuration":
+            return {"EventBridgeConfiguration": {}}
         if operation == "get-bucket-request-payment":
             return {"Payer": "BucketOwner"}
         if operation == "get-bucket-encryption":
@@ -327,6 +326,17 @@ class AwsAdapterTests(unittest.TestCase):
         self.assertEqual(inventory["multipart_uploads"]["count"], 1)
         self.assertEqual(inventory["controls"]["encryption"]["state"], "denied")
         self.assertEqual(inventory["controls"]["cors"]["state"], "absent")
+        self.assertEqual(
+            inventory["controls"]["notifications"],
+            {
+                "state": "present",
+                "summary": {
+                    "configuration_counts": {
+                        "EventBridgeConfiguration": 1,
+                    }
+                },
+            },
+        )
         self.assertEqual(
             inventory["objects"]["key_hazard_samples"][0]["key"],
             "folder/\nδ.txt",
