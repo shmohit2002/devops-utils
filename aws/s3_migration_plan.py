@@ -39,6 +39,7 @@ READ_ONLY_OPERATIONS = frozenset(
         ("s3api", "get-bucket-notification-configuration"),
         ("s3api", "get-object-lock-configuration"),
         ("s3api", "get-bucket-ownership-controls"),
+        ("s3api", "get-bucket-policy"),
         ("s3api", "get-bucket-policy-status"),
         ("s3api", "get-public-access-block"),
         ("s3api", "get-bucket-replication"),
@@ -155,6 +156,7 @@ _CONTROL_OPERATIONS = {
     "notifications": "get-bucket-notification-configuration",
     "object_lock": "get-object-lock-configuration",
     "ownership": "get-bucket-ownership-controls",
+    "policy": "get-bucket-policy",
     "policy_status": "get-bucket-policy-status",
     "public_access_block": "get-public-access-block",
     "replication": "get-bucket-replication",
@@ -186,6 +188,35 @@ _DENIED_ERROR_CODES = frozenset(
         "UnauthorizedOperation",
     }
 )
+
+_KNOWN_CONTROL_FIELDS = {
+    "acl": {"Owner", "Grants"},
+    "cors": {"CORSRules"},
+    "encryption": {"ServerSideEncryptionConfiguration"},
+    "lifecycle": {"Rules", "TransitionDefaultMinimumObjectSize"},
+    "logging": {"LoggingEnabled"},
+    "notifications": {
+        "EventBridgeConfiguration",
+        "LambdaFunctionConfigurations",
+        "QueueConfigurations",
+        "TopicConfigurations",
+    },
+    "object_lock": {"ObjectLockEnabled", "Rule"},
+    "ownership": {"OwnershipControls"},
+    "policy": {"Policy"},
+    "policy_status": {"PolicyStatus"},
+    "public_access_block": {"PublicAccessBlockConfiguration"},
+    "replication": {"ReplicationConfiguration"},
+    "request_payer": {"Payer"},
+    "tagging": {"TagSet"},
+    "versioning": {"Status", "MFADelete"},
+    "website": {
+        "RedirectAllRequestsTo",
+        "IndexDocument",
+        "ErrorDocument",
+        "RoutingRules",
+    },
+}
 
 
 class AwsCliInventory:
@@ -271,8 +302,17 @@ class AwsCliInventory:
             return {"state": "error", "summary": {"error_code": error.code}}
 
         configured, summary = _summarize_control(name, value)
+        if name == "versioning":
+            versioning_state = summary.get("status")
+            state = {
+                "Enabled": "enabled",
+                "Suspended": "suspended",
+                None: "disabled",
+            }.get(versioning_state, "unknown")
+        else:
+            state = "present" if configured else "absent"
         return {
-            "state": "present" if configured else "absent",
+            "state": state,
             "summary": summary,
         }
 
@@ -415,6 +455,17 @@ def _summarize_control(
     name: str,
     value: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
+    configured, summary = _summarize_known_control(name, value)
+    unknown_fields = sorted(set(value) - _KNOWN_CONTROL_FIELDS[name])
+    if unknown_fields:
+        summary["unclassified_fields"] = unknown_fields
+    return configured, summary
+
+
+def _summarize_known_control(
+    name: str,
+    value: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
     if name == "versioning":
         return True, {
             "status": value.get("Status"),
@@ -511,6 +562,81 @@ def _summarize_control(
                 }
             )
         }
+    if name == "policy":
+        raw_policy = value.get("Policy")
+        try:
+            policy = json.loads(raw_policy) if isinstance(raw_policy, str) else {}
+        except json.JSONDecodeError as error:
+            raise InventoryCollectionError(
+                "Bucket policy response was not valid JSON"
+            ) from error
+        statements = policy.get("Statement") or []
+        if isinstance(statements, dict):
+            statements = [statements]
+        if not isinstance(statements, list):
+            raise InventoryCollectionError(
+                "Bucket policy Statement was not a list or object"
+            )
+        principal_kinds: set[str] = set()
+        action_services: set[str] = set()
+        has_conditions = False
+        has_negative_elements = False
+        unclassified_policy_fields = {
+            f"policy.{field}"
+            for field in set(policy) - {"Version", "Id", "Statement"}
+        }
+        allowed_statement_fields = {
+            "Sid",
+            "Effect",
+            "Principal",
+            "NotPrincipal",
+            "Action",
+            "NotAction",
+            "Resource",
+            "NotResource",
+            "Condition",
+        }
+        for index, statement in enumerate(statements):
+            if not isinstance(statement, dict):
+                raise InventoryCollectionError(
+                    "Bucket policy contains a non-object statement"
+                )
+            principal = statement.get("Principal")
+            if isinstance(principal, dict):
+                principal_kinds.update(str(key) for key in principal)
+            elif principal == "*":
+                principal_kinds.add("wildcard")
+            elif principal is not None:
+                principal_kinds.add(type(principal).__name__)
+            actions = statement.get("Action") or []
+            if isinstance(actions, str):
+                actions = [actions]
+            action_services.update(
+                str(action).split(":", 1)[0]
+                for action in actions
+                if isinstance(action, str) and ":" in action
+            )
+            has_conditions = has_conditions or bool(statement.get("Condition"))
+            has_negative_elements = has_negative_elements or any(
+                key in statement
+                for key in ("NotPrincipal", "NotAction", "NotResource")
+            )
+            unclassified_policy_fields.update(
+                f"policy.Statement[{index}].{field}"
+                for field in set(statement) - allowed_statement_fields
+            )
+        summary = {
+            "statement_count": len(statements),
+            "principal_kinds": sorted(principal_kinds),
+            "action_services": sorted(action_services),
+            "has_conditions": has_conditions,
+            "has_negative_elements": has_negative_elements,
+        }
+        if unclassified_policy_fields:
+            summary["unclassified_fields"] = sorted(
+                unclassified_policy_fields
+            )
+        return bool(statements), summary
     if name == "policy_status":
         status = value.get("PolicyStatus") or {}
         return bool(status), {"is_public": bool(status.get("IsPublic"))}
@@ -639,6 +765,24 @@ class S3MigrationPlanner:
                     "Required controls could not be classified: "
                     + ", ".join(incomplete)
                     + ". AccessDenied is never treated as not configured.",
+                )
+            )
+
+        unclassified_fields = sorted(
+            f"{name}.{field}"
+            for name, value in controls.items()
+            for field in value.get("summary", {}).get(
+                "unclassified_fields", []
+            )
+        )
+        if unclassified_fields:
+            blockers.append(
+                _finding(
+                    "UNKNOWN_CONTROL_FIELDS",
+                    "AWS returned control fields this planner does not "
+                    "classify: "
+                    + ", ".join(unclassified_fields)
+                    + ". Update the planner before approving migration.",
                 )
             )
 
@@ -786,6 +930,7 @@ def _read_policy(*, partition: str, bucket: str) -> dict[str, Any]:
             "s3:GetBucketNotification",
             "s3:GetBucketObjectLockConfiguration",
             "s3:GetBucketOwnershipControls",
+            "s3:GetBucketPolicy",
             "s3:GetBucketPolicyStatus",
             "s3:GetBucketPublicAccessBlock",
             "s3:GetBucketRequestPayment",

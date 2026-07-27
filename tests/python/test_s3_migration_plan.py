@@ -244,6 +244,25 @@ class FixtureAwsRunner:
             return {"LocationConstraint": None}
         if operation == "get-bucket-versioning":
             return {"Status": "Enabled"}
+        if operation == "get-bucket-policy":
+            return {
+                "Policy": json.dumps(
+                    {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Principal": {
+                                    "AWS": "arn:aws:iam::999999999999:root"
+                                },
+                                "Action": ["s3:GetObject"],
+                                "Resource": "arn:aws:s3:::example-source/*",
+                                "Condition": {"Bool": {"aws:SecureTransport": "true"}},
+                            }
+                        ],
+                    }
+                )
+            }
         if operation == "get-bucket-acl":
             return {
                 "Grants": [
@@ -347,6 +366,21 @@ class AwsAdapterTests(unittest.TestCase):
         self.assertEqual(inventory["multipart_uploads"]["count"], 1)
         self.assertEqual(inventory["controls"]["encryption"]["state"], "denied")
         self.assertEqual(inventory["controls"]["cors"]["state"], "absent")
+        self.assertEqual(inventory["controls"]["versioning"]["state"], "enabled")
+        self.assertEqual(
+            inventory["controls"]["policy"]["summary"],
+            {
+                "action_services": ["s3"],
+                "has_conditions": True,
+                "has_negative_elements": False,
+                "principal_kinds": ["AWS"],
+                "statement_count": 1,
+            },
+        )
+        self.assertNotIn(
+            "arn:aws:iam::999999999999",
+            json.dumps(inventory["controls"]["policy"]),
+        )
         self.assertEqual(
             inventory["controls"]["notifications"],
             {
@@ -376,6 +410,32 @@ class AwsAdapterTests(unittest.TestCase):
                 (service, operation) in READ_ONLY_OPERATIONS
                 for service, operation, _ in runner.calls
             )
+        )
+
+    def test_unknown_control_fields_block_instead_of_disappearing(self):
+        class UnknownFieldRunner(FixtureAwsRunner):
+            def call(self, service, operation, parameters):
+                if operation == "get-bucket-tagging":
+                    self.calls.append((service, operation, dict(parameters)))
+                    return {"TagSet": [], "FutureBucketSetting": {"Enabled": True}}
+                return super().call(service, operation, parameters)
+
+        inventory = AwsCliInventory(
+            UnknownFieldRunner(),
+            clock=lambda: FIXED_TIME,
+        ).collect(_request())
+        plan = S3MigrationPlanner(
+            FakeInventory(inventory),
+            clock=lambda: FIXED_TIME,
+        ).plan(_request())
+
+        self.assertEqual(
+            inventory["controls"]["tagging"]["summary"]["unclassified_fields"],
+            ["FutureBucketSetting"],
+        )
+        self.assertIn(
+            "UNKNOWN_CONTROL_FIELDS",
+            {item["code"] for item in plan["decision"]["blockers"]},
         )
 
     def test_plan_bundle_requires_dot_prefixed_private_directory(self):
