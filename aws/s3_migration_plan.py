@@ -18,7 +18,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 
 SCHEMA_VERSION = 1
@@ -360,40 +360,16 @@ class AwsCliInventory:
     def _read_objects(self, request: MigrationRequest) -> dict[str, Any]:
         versions: list[dict[str, Any]] = []
         delete_markers: list[dict[str, Any]] = []
-        parameters = {
-            "bucket": request.source_bucket,
-            "region": request.source_region,
-        }
-        seen_tokens: set[tuple[str, str]] = set()
-
-        while True:
-            page = self._call(
-                "s3api",
-                "list-object-versions",
-                **parameters,
-            )
+        for page in self._pages(
+            request,
+            operation="list-object-versions",
+            markers=(
+                ("key_marker", "NextKeyMarker", True),
+                ("version_id_marker", "NextVersionIdMarker", False),
+            ),
+        ):
             versions.extend(page.get("Versions") or [])
             delete_markers.extend(page.get("DeleteMarkers") or [])
-            if not page.get("IsTruncated"):
-                break
-
-            key_marker = page.get("NextKeyMarker")
-            version_marker = page.get("NextVersionIdMarker") or ""
-            if not key_marker:
-                raise InventoryCollectionError(
-                    "Truncated version page omitted NextKeyMarker"
-                )
-            token = (str(key_marker), str(version_marker))
-            if token in seen_tokens:
-                raise InventoryCollectionError(
-                    "Version pagination repeated a continuation token"
-                )
-            seen_tokens.add(token)
-            parameters["key_marker"] = token[0]
-            if token[1]:
-                parameters["version_id_marker"] = token[1]
-            else:
-                parameters.pop("version_id_marker", None)
 
         current_versions = [
             item for item in versions if bool(item.get("IsLatest"))
@@ -440,38 +416,63 @@ class AwsCliInventory:
         request: MigrationRequest,
     ) -> dict[str, int]:
         count = 0
+        for page in self._pages(
+            request,
+            operation="list-multipart-uploads",
+            markers=(
+                ("key_marker", "NextKeyMarker", True),
+                ("upload_id_marker", "NextUploadIdMarker", True),
+            ),
+        ):
+            count += len(page.get("Uploads") or [])
+        return {"count": count}
+
+    def _pages(
+        self,
+        request: MigrationRequest,
+        *,
+        operation: str,
+        markers: tuple[tuple[str, str, bool], ...],
+    ) -> Iterator[dict[str, Any]]:
         parameters = {
             "bucket": request.source_bucket,
             "region": request.source_region,
         }
-        seen_tokens: set[tuple[str, str]] = set()
+        seen_tokens: set[tuple[str, ...]] = set()
 
         while True:
             page = self._call(
                 "s3api",
-                "list-multipart-uploads",
+                operation,
                 **parameters,
             )
-            count += len(page.get("Uploads") or [])
+            yield page
             if not page.get("IsTruncated"):
                 break
 
-            key_marker = page.get("NextKeyMarker")
-            upload_marker = page.get("NextUploadIdMarker")
-            if not key_marker or not upload_marker:
-                raise InventoryCollectionError(
-                    "Truncated multipart page omitted continuation markers"
-                )
-            token = (str(key_marker), str(upload_marker))
+            token_values = []
+            for _, response_name, required in markers:
+                value = page.get(response_name)
+                if required and not value:
+                    raise InventoryCollectionError(
+                        f"Truncated {operation} page omitted {response_name}"
+                    )
+                token_values.append(str(value or ""))
+            token = tuple(token_values)
             if token in seen_tokens:
                 raise InventoryCollectionError(
-                    "Multipart pagination repeated a continuation token"
+                    f"{operation} repeated a continuation token"
                 )
             seen_tokens.add(token)
-            parameters["key_marker"] = token[0]
-            parameters["upload_id_marker"] = token[1]
-
-        return {"count": count}
+            for (parameter_name, _, _), value in zip(
+                markers,
+                token,
+                strict=True,
+            ):
+                if value:
+                    parameters[parameter_name] = value
+                else:
+                    parameters.pop(parameter_name, None)
 
 
 def _normalize_region(value: Any) -> str:
