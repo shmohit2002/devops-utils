@@ -763,11 +763,59 @@ class S3MigrationPlanner:
                 "required_actions": actions,
             },
             "evidence": evidence,
+            "least_privilege_read_policy": _read_policy(
+                partition=evidence.get("caller", {}).get("partition", "aws"),
+                bucket=request.source_bucket,
+            ),
             "notice": (
                 "A plan never authorizes transfer or cutover. Inventory is "
                 "point-in-time evidence and must be refreshed before approval."
             ),
         }
+
+
+def _read_policy(*, partition: str, bucket: str) -> dict[str, Any]:
+    """Return only the IAM actions exercised by the inventory adapter."""
+
+    bucket_actions = sorted(
+        {
+            "s3:GetBucketAcl",
+            "s3:GetBucketCORS",
+            "s3:GetBucketLocation",
+            "s3:GetBucketLogging",
+            "s3:GetBucketNotification",
+            "s3:GetBucketObjectLockConfiguration",
+            "s3:GetBucketOwnershipControls",
+            "s3:GetBucketPolicyStatus",
+            "s3:GetBucketPublicAccessBlock",
+            "s3:GetBucketRequestPayment",
+            "s3:GetBucketTagging",
+            "s3:GetBucketVersioning",
+            "s3:GetBucketWebsite",
+            "s3:GetEncryptionConfiguration",
+            "s3:GetLifecycleConfiguration",
+            "s3:GetReplicationConfiguration",
+            "s3:ListBucketMultipartUploads",
+            "s3:ListBucketVersions",
+        }
+    )
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "IdentifyCaller",
+                "Effect": "Allow",
+                "Action": ["sts:GetCallerIdentity"],
+                "Resource": "*",
+            },
+            {
+                "Sid": "InventoryOneBucket",
+                "Effect": "Allow",
+                "Action": bucket_actions,
+                "Resource": f"arn:{partition}:s3:::{bucket}",
+            },
+        ],
+    }
 
 
 def render_json(plan: dict[str, Any]) -> str:

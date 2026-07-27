@@ -127,6 +127,27 @@ class PlannerDecisionTests(unittest.TestCase):
             "A plan never authorizes transfer or cutover.",
             plan["notice"],
         )
+        policy = plan["least_privilege_read_policy"]
+        actions = {
+            action
+            for statement in policy["Statement"]
+            for action in statement["Action"]
+        }
+        self.assertIn("s3:ListBucketVersions", actions)
+        self.assertIn("s3:GetBucketObjectLockConfiguration", actions)
+        self.assertIn("sts:GetCallerIdentity", actions)
+        self.assertFalse(
+            any(
+                action.split(":", 1)[1].startswith(
+                    ("Create", "Delete", "Put", "Update")
+                )
+                for action in actions
+            )
+        )
+        self.assertEqual(
+            policy["Statement"][1]["Resource"],
+            "arn:aws:s3:::example-source",
+        )
 
     def test_version_history_routes_to_replication_and_manual_review(self):
         plan = S3MigrationPlanner(
