@@ -56,10 +56,26 @@ Markdown intentionally omits account IDs and object keys.
 The JSON includes an explicit source bucket ARN, actual request counts by AWS
 operation, ranked engine candidates, and a 24-hour expiry. Refresh sooner when
 the bucket is active. New top-level control fields that the installed planner
-does not understand block approval rather than disappearing from the summary.
+does not understand block approval rather than disappearing from the summary;
+the same rule applies to unfamiliar nested fields inside known controls.
 Bucket policy identities/resources are not copied into the report; the summary
 retains statement count, principal forms, action services, conditions, and
 negative-policy elements.
+
+## Bundle schema
+
+`plan.json` uses schema version `1`. Its stable top-level fields are
+`schema_version`, `generated_at`, `expires_at`, `request`, `decision`,
+`evidence`, `least_privilege_read_policy`, `request_estimate`, and `notice`.
+Decision evidence includes status/exit code, blockers, warnings, required
+actions, and ranked recommendations. Additive fields may appear within version
+1; a breaking rename, removal, or semantic change requires a new schema
+version. Consumers must reject unsupported schema versions.
+
+`plan.md` is the human review view. It includes the same decision, ranked
+engines, actual inventory calls, transfer lower bound, preservation caveat,
+required actions, and full read-only policy. JSON remains authoritative for
+automation.
 
 ## Required follow-through
 
