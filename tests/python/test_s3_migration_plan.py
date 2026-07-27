@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "aws"))
 
 from s3_migration_plan import (  # noqa: E402
+    AwsCliError,
+    AwsCliInventory,
     EXIT_BLOCKED,
     EXIT_READY,
     EXIT_REVIEW,
@@ -17,6 +20,7 @@ from s3_migration_plan import (  # noqa: E402
     S3MigrationPlanner,
     render_json,
     render_markdown,
+    write_plan_bundle,
 )
 
 
@@ -200,6 +204,163 @@ class PlannerDecisionTests(unittest.TestCase):
         )
         for _, operation in READ_ONLY_OPERATIONS:
             self.assertFalse(operation.startswith(mutating_prefixes), operation)
+
+class FixtureAwsRunner:
+    def __init__(self):
+        self.calls = []
+
+    def version(self):
+        return "aws-cli/2.31.0 Python/3.13"
+
+    def call(self, service, operation, parameters):
+        self.calls.append((service, operation, dict(parameters)))
+        if (service, operation) == ("sts", "get-caller-identity"):
+            return {
+                "Account": "123456789012",
+                "Arn": "arn:aws:sts::123456789012:assumed-role/ops/session",
+            }
+        if operation == "get-bucket-location":
+            return {"LocationConstraint": None}
+        if operation == "get-bucket-versioning":
+            return {"Status": "Enabled"}
+        if operation == "get-bucket-acl":
+            return {
+                "Grants": [
+                    {"Grantee": {"Type": "CanonicalUser"}, "Permission": "FULL_CONTROL"},
+                ]
+            }
+        if operation in {
+            "get-bucket-logging",
+            "get-bucket-notification-configuration",
+        }:
+            return {}
+        if operation == "get-bucket-request-payment":
+            return {"Payer": "BucketOwner"}
+        if operation == "get-bucket-encryption":
+            raise AwsCliError(operation, "AccessDenied")
+        if operation == "list-object-versions":
+            marker = parameters.get("key_marker")
+            if marker is None:
+                return {
+                    "IsTruncated": True,
+                    "NextKeyMarker": "normal.txt",
+                    "NextVersionIdMarker": "v1",
+                    "Versions": [
+                        {
+                            "Key": "normal.txt",
+                            "VersionId": "v1",
+                            "Size": 10,
+                            "IsLatest": True,
+                            "StorageClass": "STANDARD",
+                            "ChecksumAlgorithm": ["SHA256"],
+                        }
+                    ],
+                    "DeleteMarkers": [],
+                }
+            if marker == "normal.txt":
+                return {
+                    "IsTruncated": True,
+                    "NextKeyMarker": "page-two",
+                    "NextVersionIdMarker": "v2",
+                    "Versions": [],
+                    "DeleteMarkers": [],
+                }
+            return {
+                "IsTruncated": False,
+                "Versions": [
+                    {
+                        "Key": "folder/\nδ.txt",
+                        "VersionId": "v3",
+                        "Size": 20,
+                        "IsLatest": True,
+                        "StorageClass": "STANDARD_IA",
+                    }
+                ],
+                "DeleteMarkers": [
+                    {
+                        "Key": "removed.txt",
+                        "VersionId": "d1",
+                        "IsLatest": True,
+                    }
+                ],
+            }
+        if operation == "list-multipart-uploads":
+            if "key_marker" not in parameters:
+                return {
+                    "IsTruncated": True,
+                    "NextKeyMarker": "uploading.bin",
+                    "NextUploadIdMarker": "upload-1",
+                    "Uploads": [{"Key": "uploading.bin", "UploadId": "upload-1"}],
+                }
+            return {"IsTruncated": False, "Uploads": []}
+
+        missing_codes = {
+            "get-bucket-cors": "NoSuchCORSConfiguration",
+            "get-bucket-lifecycle-configuration": "NoSuchLifecycleConfiguration",
+            "get-object-lock-configuration": "ObjectLockConfigurationNotFoundError",
+            "get-bucket-ownership-controls": "OwnershipControlsNotFoundError",
+            "get-bucket-policy-status": "NoSuchBucketPolicy",
+            "get-public-access-block": "NoSuchPublicAccessBlockConfiguration",
+            "get-bucket-replication": "ReplicationConfigurationNotFoundError",
+            "get-bucket-tagging": "NoSuchTagSet",
+            "get-bucket-website": "NoSuchWebsiteConfiguration",
+        }
+        raise AwsCliError(operation, missing_codes[operation])
+
+
+class AwsAdapterTests(unittest.TestCase):
+    def test_collects_paginated_redacted_inventory_and_distinguishes_denial(self):
+        runner = FixtureAwsRunner()
+        inventory = AwsCliInventory(
+            runner,
+            clock=lambda: FIXED_TIME,
+        ).collect(_request())
+
+        self.assertEqual(inventory["observed_source_region"], "us-east-1")
+        self.assertEqual(inventory["caller"]["partition"], "aws")
+        self.assertEqual(inventory["caller"]["arn_type"], "assumed-role")
+        self.assertNotIn("arn", inventory["caller"])
+        self.assertEqual(inventory["objects"]["current_count"], 2)
+        self.assertEqual(inventory["objects"]["version_count"], 2)
+        self.assertEqual(inventory["objects"]["delete_marker_count"], 1)
+        self.assertEqual(inventory["objects"]["current_bytes"], 30)
+        self.assertEqual(inventory["multipart_uploads"]["count"], 1)
+        self.assertEqual(inventory["controls"]["encryption"]["state"], "denied")
+        self.assertEqual(inventory["controls"]["cors"]["state"], "absent")
+        self.assertEqual(
+            inventory["objects"]["key_hazard_samples"][0]["key"],
+            "folder/\nδ.txt",
+        )
+
+        version_calls = [
+            parameters
+            for service, operation, parameters in runner.calls
+            if operation == "list-object-versions"
+        ]
+        self.assertEqual(len(version_calls), 3)
+        self.assertEqual(version_calls[1]["key_marker"], "normal.txt")
+        self.assertEqual(version_calls[2]["key_marker"], "page-two")
+        self.assertTrue(
+            all(
+                (service, operation) in READ_ONLY_OPERATIONS
+                for service, operation, _ in runner.calls
+            )
+        )
+
+    def test_plan_bundle_requires_dot_prefixed_private_directory(self):
+        plan = S3MigrationPlanner(
+            FakeInventory(_inventory()),
+            clock=lambda: FIXED_TIME,
+        ).plan(_request())
+
+        with tempfile.TemporaryDirectory() as root:
+            private_dir = Path(root) / ".s3-plan"
+            json_path, markdown_path = write_plan_bundle(private_dir, plan)
+            self.assertEqual(json.loads(json_path.read_text())["schema_version"], 1)
+            self.assertIn("READY", markdown_path.read_text())
+
+            with self.assertRaises(ValueError):
+                write_plan_bundle(Path(root) / "public-plan", plan)
 
 
 if __name__ == "__main__":
