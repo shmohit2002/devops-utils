@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -188,6 +189,17 @@ _DENIED_ERROR_CODES = frozenset(
         "UnauthorizedOperation",
     }
 )
+_RETRYABLE_ERROR_CODES = frozenset(
+    {
+        "InternalError",
+        "RequestTimeout",
+        "RequestTimeoutException",
+        "ServiceUnavailable",
+        "SlowDown",
+        "Throttling",
+        "ThrottlingException",
+    }
+)
 
 _KNOWN_CONTROL_FIELDS = {
     "acl": {"Owner", "Grants"},
@@ -228,10 +240,17 @@ class AwsCliInventory:
         *,
         clock: Callable[[], datetime] | None = None,
         key_sample_limit: int = 20,
+        max_attempts: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self._runner = runner
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._key_sample_limit = key_sample_limit
+        self._max_attempts = max_attempts
+        self._sleep = sleep
+        self._request_counts: Counter[tuple[str, str]] = Counter()
 
     def _call(
         self,
@@ -243,9 +262,22 @@ class AwsCliInventory:
             raise InventoryCollectionError(
                 f"Refusing non-read AWS operation: {service} {operation}"
             )
-        return self._runner.call(service, operation, parameters)
+        for attempt in range(self._max_attempts):
+            self._request_counts[(service, operation)] += 1
+            try:
+                return self._runner.call(service, operation, parameters)
+            except AwsCliError as error:
+                can_retry = (
+                    error.code in _RETRYABLE_ERROR_CODES
+                    and attempt + 1 < self._max_attempts
+                )
+                if not can_retry:
+                    raise
+                self._sleep(0.25 * (2**attempt))
+        raise InventoryCollectionError("AWS retry loop ended unexpectedly")
 
     def collect(self, request: MigrationRequest) -> dict[str, Any]:
+        self._request_counts.clear()
         started_at = self._clock().astimezone(timezone.utc).isoformat()
         identity = self._call("sts", "get-caller-identity")
         location = self._call(
@@ -279,6 +311,15 @@ class AwsCliInventory:
             "objects": objects,
             "multipart_uploads": multipart_uploads,
             "controls": controls,
+            "request_summary": {
+                "aws_api_calls": sum(self._request_counts.values()),
+                "operation_counts": {
+                    f"{service}:{operation}": count
+                    for (service, operation), count in sorted(
+                        self._request_counts.items()
+                    )
+                },
+            },
         }
 
     def _read_control(

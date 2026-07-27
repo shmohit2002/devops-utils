@@ -229,6 +229,7 @@ class PlannerDecisionTests(unittest.TestCase):
 class FixtureAwsRunner:
     def __init__(self):
         self.calls = []
+        self.throttled = False
 
     def version(self):
         return "aws-cli/2.31.0 Python/3.13"
@@ -280,23 +281,35 @@ class FixtureAwsRunner:
         if operation == "list-object-versions":
             marker = parameters.get("key_marker")
             if marker is None:
+                if not self.throttled:
+                    self.throttled = True
+                    raise AwsCliError(operation, "SlowDown")
+                keys = [
+                    ".leading",
+                    "trailing.",
+                    "double__name",
+                    "folder/",
+                    "x" * 901,
+                    *[f"bulk/{index:04d}" for index in range(995)],
+                ]
                 return {
                     "IsTruncated": True,
-                    "NextKeyMarker": "normal.txt",
+                    "NextKeyMarker": "bulk/0994",
                     "NextVersionIdMarker": "v1",
                     "Versions": [
                         {
-                            "Key": "normal.txt",
-                            "VersionId": "v1",
-                            "Size": 10,
+                            "Key": key,
+                            "VersionId": f"v{index}",
+                            "Size": 0 if key == "folder/" else 1,
                             "IsLatest": True,
                             "StorageClass": "STANDARD",
                             "ChecksumAlgorithm": ["SHA256"],
                         }
+                        for index, key in enumerate(keys)
                     ],
                     "DeleteMarkers": [],
                 }
-            if marker == "normal.txt":
+            if marker == "bulk/0994":
                 return {
                     "IsTruncated": True,
                     "NextKeyMarker": "page-two",
@@ -350,19 +363,21 @@ class FixtureAwsRunner:
 class AwsAdapterTests(unittest.TestCase):
     def test_collects_paginated_redacted_inventory_and_distinguishes_denial(self):
         runner = FixtureAwsRunner()
+        retry_delays = []
         inventory = AwsCliInventory(
             runner,
             clock=lambda: FIXED_TIME,
+            sleep=retry_delays.append,
         ).collect(_request())
 
         self.assertEqual(inventory["observed_source_region"], "us-east-1")
         self.assertEqual(inventory["caller"]["partition"], "aws")
         self.assertEqual(inventory["caller"]["arn_type"], "assumed-role")
         self.assertNotIn("arn", inventory["caller"])
-        self.assertEqual(inventory["objects"]["current_count"], 2)
-        self.assertEqual(inventory["objects"]["version_count"], 2)
+        self.assertEqual(inventory["objects"]["current_count"], 1001)
+        self.assertEqual(inventory["objects"]["version_count"], 1001)
         self.assertEqual(inventory["objects"]["delete_marker_count"], 1)
-        self.assertEqual(inventory["objects"]["current_bytes"], 30)
+        self.assertEqual(inventory["objects"]["current_bytes"], 1019)
         self.assertEqual(inventory["multipart_uploads"]["count"], 1)
         self.assertEqual(inventory["controls"]["encryption"]["state"], "denied")
         self.assertEqual(inventory["controls"]["cors"]["state"], "absent")
@@ -392,19 +407,41 @@ class AwsAdapterTests(unittest.TestCase):
                 },
             },
         )
+        hazards_by_key = {
+            item["key"]: set(item["hazards"])
+            for item in inventory["objects"]["key_hazard_samples"]
+        }
         self.assertEqual(
-            inventory["objects"]["key_hazard_samples"][0]["key"],
-            "folder/\nδ.txt",
+            hazards_by_key["folder/\nδ.txt"],
+            {"control-character", "unicode"},
         )
+        self.assertIn("dot-segment", hazards_by_key[".leading"])
+        self.assertIn("dot-segment", hazards_by_key["trailing."])
+        self.assertIn("repeated-double-underscore", hazards_by_key["double__name"])
+        self.assertIn("zero-byte-slash-marker", hazards_by_key["folder/"])
+        self.assertIn("long-key", hazards_by_key["x" * 901])
 
         version_calls = [
             parameters
             for service, operation, parameters in runner.calls
             if operation == "list-object-versions"
         ]
-        self.assertEqual(len(version_calls), 3)
-        self.assertEqual(version_calls[1]["key_marker"], "normal.txt")
-        self.assertEqual(version_calls[2]["key_marker"], "page-two")
+        self.assertEqual(len(version_calls), 4)
+        self.assertNotIn("key_marker", version_calls[0])
+        self.assertNotIn("key_marker", version_calls[1])
+        self.assertEqual(version_calls[2]["key_marker"], "bulk/0994")
+        self.assertEqual(version_calls[3]["key_marker"], "page-two")
+        self.assertEqual(retry_delays, [0.25])
+        self.assertEqual(
+            inventory["request_summary"]["operation_counts"][
+                "s3api:list-object-versions"
+            ],
+            4,
+        )
+        self.assertEqual(
+            inventory["request_summary"]["aws_api_calls"],
+            len(runner.calls),
+        )
         self.assertTrue(
             all(
                 (service, operation) in READ_ONLY_OPERATIONS
@@ -423,6 +460,7 @@ class AwsAdapterTests(unittest.TestCase):
         inventory = AwsCliInventory(
             UnknownFieldRunner(),
             clock=lambda: FIXED_TIME,
+            sleep=lambda _: None,
         ).collect(_request())
         plan = S3MigrationPlanner(
             FakeInventory(inventory),
