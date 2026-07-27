@@ -230,6 +230,192 @@ _KNOWN_CONTROL_FIELDS = {
     },
 }
 
+_KNOWN_NESTED_CONTROL_FIELDS = {
+    "acl": {
+        "Owner.DisplayName",
+        "Owner.ID",
+        "Grants[].Grantee.DisplayName",
+        "Grants[].Grantee.EmailAddress",
+        "Grants[].Grantee.ID",
+        "Grants[].Grantee.Type",
+        "Grants[].Grantee.URI",
+        "Grants[].Grantee",
+        "Grants[].Permission",
+    },
+    "cors": {
+        "CORSRules[].AllowedHeaders",
+        "CORSRules[].AllowedMethods",
+        "CORSRules[].AllowedOrigins",
+        "CORSRules[].ExposeHeaders",
+        "CORSRules[].ID",
+        "CORSRules[].MaxAgeSeconds",
+    },
+    "encryption": {
+        "ServerSideEncryptionConfiguration.Rules",
+        "ServerSideEncryptionConfiguration.Rules[].ApplyServerSideEncryptionByDefault",
+        "ServerSideEncryptionConfiguration.Rules[].ApplyServerSideEncryptionByDefault.KMSMasterKeyID",
+        "ServerSideEncryptionConfiguration.Rules[].ApplyServerSideEncryptionByDefault.SSEAlgorithm",
+        "ServerSideEncryptionConfiguration.Rules[].BucketKeyEnabled",
+    },
+    "lifecycle": {
+        "Rules[].AbortIncompleteMultipartUpload",
+        "Rules[].AbortIncompleteMultipartUpload.DaysAfterInitiation",
+        "Rules[].Expiration",
+        "Rules[].Expiration.Date",
+        "Rules[].Expiration.Days",
+        "Rules[].Expiration.ExpiredObjectDeleteMarker",
+        "Rules[].Filter",
+        "Rules[].Filter.And",
+        "Rules[].Filter.And.ObjectSizeGreaterThan",
+        "Rules[].Filter.And.ObjectSizeLessThan",
+        "Rules[].Filter.And.Prefix",
+        "Rules[].Filter.And.Tags",
+        "Rules[].Filter.And.Tags[].Key",
+        "Rules[].Filter.And.Tags[].Value",
+        "Rules[].Filter.ObjectSizeGreaterThan",
+        "Rules[].Filter.ObjectSizeLessThan",
+        "Rules[].Filter.Prefix",
+        "Rules[].Filter.Tag",
+        "Rules[].Filter.Tag.Key",
+        "Rules[].Filter.Tag.Value",
+        "Rules[].ID",
+        "Rules[].NoncurrentVersionExpiration",
+        "Rules[].NoncurrentVersionExpiration.NewerNoncurrentVersions",
+        "Rules[].NoncurrentVersionExpiration.NoncurrentDays",
+        "Rules[].NoncurrentVersionTransitions",
+        "Rules[].NoncurrentVersionTransitions[].NewerNoncurrentVersions",
+        "Rules[].NoncurrentVersionTransitions[].NoncurrentDays",
+        "Rules[].NoncurrentVersionTransitions[].StorageClass",
+        "Rules[].Prefix",
+        "Rules[].Status",
+        "Rules[].Transitions",
+        "Rules[].Transitions[].Date",
+        "Rules[].Transitions[].Days",
+        "Rules[].Transitions[].StorageClass",
+    },
+    "logging": {
+        "LoggingEnabled.TargetBucket",
+        "LoggingEnabled.TargetGrants",
+        "LoggingEnabled.TargetGrants[].Grantee.DisplayName",
+        "LoggingEnabled.TargetGrants[].Grantee.EmailAddress",
+        "LoggingEnabled.TargetGrants[].Grantee.ID",
+        "LoggingEnabled.TargetGrants[].Grantee.Type",
+        "LoggingEnabled.TargetGrants[].Grantee.URI",
+        "LoggingEnabled.TargetGrants[].Grantee",
+        "LoggingEnabled.TargetGrants[].Permission",
+        "LoggingEnabled.TargetObjectKeyFormat",
+        "LoggingEnabled.TargetObjectKeyFormat.PartitionedPrefix",
+        "LoggingEnabled.TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource",
+        "LoggingEnabled.TargetObjectKeyFormat.SimplePrefix",
+        "LoggingEnabled.TargetPrefix",
+    },
+    "notifications": {
+        "LambdaFunctionConfigurations[].Events",
+        "LambdaFunctionConfigurations[].Filter",
+        "LambdaFunctionConfigurations[].Filter.Key",
+        "LambdaFunctionConfigurations[].Filter.Key.FilterRules",
+        "LambdaFunctionConfigurations[].Filter.Key.FilterRules[].Name",
+        "LambdaFunctionConfigurations[].Filter.Key.FilterRules[].Value",
+        "LambdaFunctionConfigurations[].Id",
+        "LambdaFunctionConfigurations[].LambdaFunctionArn",
+        "QueueConfigurations[].Events",
+        "QueueConfigurations[].Filter",
+        "QueueConfigurations[].Filter.Key",
+        "QueueConfigurations[].Filter.Key.FilterRules",
+        "QueueConfigurations[].Filter.Key.FilterRules[].Name",
+        "QueueConfigurations[].Filter.Key.FilterRules[].Value",
+        "QueueConfigurations[].Id",
+        "QueueConfigurations[].QueueArn",
+        "TopicConfigurations[].Events",
+        "TopicConfigurations[].Filter",
+        "TopicConfigurations[].Filter.Key",
+        "TopicConfigurations[].Filter.Key.FilterRules",
+        "TopicConfigurations[].Filter.Key.FilterRules[].Name",
+        "TopicConfigurations[].Filter.Key.FilterRules[].Value",
+        "TopicConfigurations[].Id",
+        "TopicConfigurations[].TopicArn",
+    },
+    "object_lock": {
+        "Rule.DefaultRetention",
+        "Rule.DefaultRetention.Days",
+        "Rule.DefaultRetention.Mode",
+        "Rule.DefaultRetention.Years",
+    },
+    "ownership": {
+        "OwnershipControls.Rules",
+        "OwnershipControls.Rules[].ObjectOwnership",
+    },
+    "policy": set(),
+    "policy_status": {"PolicyStatus.IsPublic"},
+    "public_access_block": {
+        "PublicAccessBlockConfiguration.BlockPublicAcls",
+        "PublicAccessBlockConfiguration.BlockPublicPolicy",
+        "PublicAccessBlockConfiguration.IgnorePublicAcls",
+        "PublicAccessBlockConfiguration.RestrictPublicBuckets",
+    },
+    "replication": {
+        "ReplicationConfiguration.Role",
+        "ReplicationConfiguration.Rules",
+        "ReplicationConfiguration.Rules[].DeleteMarkerReplication",
+        "ReplicationConfiguration.Rules[].DeleteMarkerReplication.Status",
+        "ReplicationConfiguration.Rules[].Destination",
+        "ReplicationConfiguration.Rules[].Destination.AccessControlTranslation",
+        "ReplicationConfiguration.Rules[].Destination.AccessControlTranslation.Owner",
+        "ReplicationConfiguration.Rules[].Destination.Account",
+        "ReplicationConfiguration.Rules[].Destination.Bucket",
+        "ReplicationConfiguration.Rules[].Destination.EncryptionConfiguration",
+        "ReplicationConfiguration.Rules[].Destination.EncryptionConfiguration.ReplicaKmsKeyID",
+        "ReplicationConfiguration.Rules[].Destination.Metrics",
+        "ReplicationConfiguration.Rules[].Destination.Metrics.EventThreshold",
+        "ReplicationConfiguration.Rules[].Destination.Metrics.EventThreshold.Minutes",
+        "ReplicationConfiguration.Rules[].Destination.Metrics.Status",
+        "ReplicationConfiguration.Rules[].Destination.ReplicationTime",
+        "ReplicationConfiguration.Rules[].Destination.ReplicationTime.Status",
+        "ReplicationConfiguration.Rules[].Destination.ReplicationTime.Time",
+        "ReplicationConfiguration.Rules[].Destination.ReplicationTime.Time.Minutes",
+        "ReplicationConfiguration.Rules[].Destination.StorageClass",
+        "ReplicationConfiguration.Rules[].ExistingObjectReplication",
+        "ReplicationConfiguration.Rules[].ExistingObjectReplication.Status",
+        "ReplicationConfiguration.Rules[].Filter",
+        "ReplicationConfiguration.Rules[].Filter.And",
+        "ReplicationConfiguration.Rules[].Filter.And.Prefix",
+        "ReplicationConfiguration.Rules[].Filter.And.Tags",
+        "ReplicationConfiguration.Rules[].Filter.And.Tags[].Key",
+        "ReplicationConfiguration.Rules[].Filter.And.Tags[].Value",
+        "ReplicationConfiguration.Rules[].Filter.Prefix",
+        "ReplicationConfiguration.Rules[].Filter.Tag",
+        "ReplicationConfiguration.Rules[].Filter.Tag.Key",
+        "ReplicationConfiguration.Rules[].Filter.Tag.Value",
+        "ReplicationConfiguration.Rules[].ID",
+        "ReplicationConfiguration.Rules[].Prefix",
+        "ReplicationConfiguration.Rules[].Priority",
+        "ReplicationConfiguration.Rules[].SourceSelectionCriteria",
+        "ReplicationConfiguration.Rules[].SourceSelectionCriteria.ReplicaModifications",
+        "ReplicationConfiguration.Rules[].SourceSelectionCriteria.ReplicaModifications.Status",
+        "ReplicationConfiguration.Rules[].SourceSelectionCriteria.SseKmsEncryptedObjects",
+        "ReplicationConfiguration.Rules[].SourceSelectionCriteria.SseKmsEncryptedObjects.Status",
+        "ReplicationConfiguration.Rules[].Status",
+    },
+    "request_payer": set(),
+    "tagging": {"TagSet[].Key", "TagSet[].Value"},
+    "versioning": set(),
+    "website": {
+        "ErrorDocument.Key",
+        "IndexDocument.Suffix",
+        "RedirectAllRequestsTo.HostName",
+        "RedirectAllRequestsTo.Protocol",
+        "RoutingRules[].Condition",
+        "RoutingRules[].Condition.HttpErrorCodeReturnedEquals",
+        "RoutingRules[].Condition.KeyPrefixEquals",
+        "RoutingRules[].Redirect",
+        "RoutingRules[].Redirect.HostName",
+        "RoutingRules[].Redirect.HttpRedirectCode",
+        "RoutingRules[].Redirect.Protocol",
+        "RoutingRules[].Redirect.ReplaceKeyPrefixWith",
+        "RoutingRules[].Redirect.ReplaceKeyWith",
+    },
+}
+
 
 class AwsCliInventory:
     """AWS CLI adapter that emits a redacted inventory and can only perform reads."""
@@ -498,10 +684,34 @@ def _summarize_control(
     value: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
     configured, summary = _summarize_known_control(name, value)
-    unknown_fields = sorted(set(value) - _KNOWN_CONTROL_FIELDS[name])
+    unknown_fields = set(summary.get("unclassified_fields", []))
+    unknown_fields.update(set(value) - _KNOWN_CONTROL_FIELDS[name])
+    observed_nested_fields = set()
+    for top_level_name, child in value.items():
+        observed_nested_fields.update(
+            _nested_field_paths(child, top_level_name)
+        )
+    unknown_fields.update(
+        observed_nested_fields - _KNOWN_NESTED_CONTROL_FIELDS[name]
+    )
     if unknown_fields:
-        summary["unclassified_fields"] = unknown_fields
+        summary["unclassified_fields"] = sorted(unknown_fields)
     return configured, summary
+
+
+def _nested_field_paths(value: Any, prefix: str) -> set[str]:
+    paths: set[str] = set()
+    if isinstance(value, dict):
+        for name, child in value.items():
+            path = f"{prefix}.{name}"
+            paths.add(path)
+            paths.update(_nested_field_paths(child, path))
+    elif isinstance(value, list):
+        item_prefix = f"{prefix}[]"
+        for child in value:
+            if isinstance(child, (dict, list)):
+                paths.update(_nested_field_paths(child, item_prefix))
+    return paths
 
 
 def _summarize_known_control(

@@ -549,6 +549,20 @@ class AwsAdapterTests(unittest.TestCase):
                 if operation == "get-bucket-tagging":
                     self.calls.append((service, operation, dict(parameters)))
                     return {"TagSet": [], "FutureBucketSetting": {"Enabled": True}}
+                if operation == "get-bucket-encryption":
+                    self.calls.append((service, operation, dict(parameters)))
+                    return {
+                        "ServerSideEncryptionConfiguration": {
+                            "Rules": [
+                                {
+                                    "ApplyServerSideEncryptionByDefault": {
+                                        "SSEAlgorithm": "AES256",
+                                        "FutureEncryptionBehavior": True,
+                                    }
+                                }
+                            ]
+                        }
+                    }
                 return super().call(service, operation, parameters)
 
         inventory = AwsCliInventory(
@@ -563,7 +577,18 @@ class AwsAdapterTests(unittest.TestCase):
 
         self.assertEqual(
             inventory["controls"]["tagging"]["summary"]["unclassified_fields"],
-            ["FutureBucketSetting"],
+            [
+                "FutureBucketSetting",
+                "FutureBucketSetting.Enabled",
+            ],
+        )
+        self.assertEqual(
+            inventory["controls"]["encryption"]["summary"][
+                "unclassified_fields"
+            ],
+            [
+                "ServerSideEncryptionConfiguration.Rules[].ApplyServerSideEncryptionByDefault.FutureEncryptionBehavior"
+            ],
         )
         self.assertIn(
             "UNKNOWN_CONTROL_FIELDS",
