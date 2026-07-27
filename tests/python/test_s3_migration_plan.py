@@ -1,7 +1,11 @@
+import contextlib
+import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +22,8 @@ from s3_migration_plan import (  # noqa: E402
     READ_ONLY_OPERATIONS,
     MigrationRequest,
     S3MigrationPlanner,
+    SubprocessAwsRunner,
+    main,
     render_json,
     render_markdown,
     write_plan_bundle,
@@ -597,6 +603,156 @@ class AwsAdapterTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 write_plan_bundle(Path(root) / "public-plan", plan)
+
+
+class CliBoundaryTests(unittest.TestCase):
+    def test_subprocess_runner_preserves_each_argument_without_a_shell(self):
+        response = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"LocationConstraint": null}',
+            stderr="",
+        )
+        with mock.patch(
+            "s3_migration_plan.subprocess.run",
+            return_value=response,
+        ) as run:
+            result = SubprocessAwsRunner().call(
+                "s3api",
+                "get-bucket-location",
+                {
+                    "bucket": "literal value\twith space",
+                    "region": "us-east-1",
+                },
+            )
+
+        command = run.call_args.args[0]
+        self.assertIsInstance(command, list)
+        self.assertEqual(
+            command[command.index("--bucket") + 1],
+            "literal value\twith space",
+        )
+        self.assertNotIn("shell", run.call_args.kwargs)
+        self.assertIsNone(result["LocationConstraint"])
+
+    def test_provider_stderr_is_not_retained_in_failure(self):
+        response = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "SECRET-VALUE An error occurred (AccessDenied) when calling "
+                "GetBucketLocation"
+            ),
+        )
+        with mock.patch(
+            "s3_migration_plan.subprocess.run",
+            return_value=response,
+        ):
+            with self.assertRaises(AwsCliError) as caught:
+                SubprocessAwsRunner().call(
+                    "s3api",
+                    "get-bucket-location",
+                    {"bucket": "example", "region": "us-east-1"},
+                )
+
+        self.assertEqual(caught.exception.code, "AccessDenied")
+        self.assertNotIn("SECRET-VALUE", str(caught.exception))
+
+    def test_retry_budget_is_bounded_when_throttling_never_recovers(self):
+        class AlwaysSlowRunner:
+            def __init__(self):
+                self.calls = 0
+
+            def version(self):
+                return "aws-cli/test"
+
+            def call(self, service, operation, parameters):
+                self.calls += 1
+                raise AwsCliError(operation, "SlowDown")
+
+        runner = AlwaysSlowRunner()
+        delays = []
+        with self.assertRaises(AwsCliError):
+            AwsCliInventory(
+                runner,
+                clock=lambda: FIXED_TIME,
+                max_attempts=3,
+                sleep=delays.append,
+            ).collect(_request())
+
+        self.assertEqual(runner.calls, 3)
+        self.assertEqual(delays, [0.25, 0.5])
+
+    def test_main_returns_decision_codes_and_writes_private_bundle(self):
+        with tempfile.TemporaryDirectory() as root:
+            ready_dir = Path(root) / ".ready"
+            blocked_dir = Path(root) / ".blocked"
+            with mock.patch(
+                "s3_migration_plan.AwsCliInventory.collect",
+                return_value=_inventory(),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    ready_code = main([
+                        "plan",
+                        "--source-bucket",
+                        "example-source",
+                        "--source-region",
+                        "us-east-1",
+                        "--target-bucket",
+                        "example-target",
+                        "--target-region",
+                        "us-west-2",
+                        "--output-dir",
+                        str(ready_dir),
+                    ])
+                    blocked_code = main([
+                        "plan",
+                        "--source-bucket",
+                        "example-source",
+                        "--source-region",
+                        "us-east-1",
+                        "--target-bucket",
+                        "example-source",
+                        "--target-region",
+                        "us-west-2",
+                        "--output-dir",
+                        str(blocked_dir),
+                    ])
+
+            self.assertEqual(ready_code, EXIT_READY)
+            self.assertEqual(blocked_code, EXIT_BLOCKED)
+            self.assertTrue((ready_dir / "plan.json").is_file())
+            self.assertTrue((blocked_dir / "plan.md").is_file())
+
+    def test_main_returns_tool_error_without_echoing_provider_stderr(self):
+        private_output = Path(".unused-private-output")
+        with mock.patch(
+            "s3_migration_plan.AwsCliInventory.collect",
+            side_effect=AwsCliError("get-bucket-location", "AccessDenied"),
+        ):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main([
+                    "plan",
+                    "--source-bucket",
+                    "example-source",
+                    "--source-region",
+                    "us-east-1",
+                    "--target-bucket",
+                    "example-target",
+                    "--target-region",
+                    "us-west-2",
+                    "--output-dir",
+                    str(private_output),
+                ])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            stderr.getvalue().strip(),
+            "error: get-bucket-location failed (AccessDenied)",
+        )
+        self.assertFalse(private_output.exists())
 
 
 if __name__ == "__main__":
