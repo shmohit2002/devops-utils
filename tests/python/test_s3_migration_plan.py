@@ -178,6 +178,13 @@ class PlannerDecisionTests(unittest.TestCase):
             policy["Statement"][1]["Resource"],
             "arn:aws:s3:::example-source",
         )
+        self.assertEqual(
+            plan["request_estimate"]["transfer_lower_bound"],
+            {
+                "source_items_considered": 2,
+                "target_object_writes": 2,
+            },
+        )
 
     def test_version_history_routes_to_replication_and_manual_review(self):
         plan = S3MigrationPlanner(
@@ -262,21 +269,26 @@ class PlannerDecisionTests(unittest.TestCase):
         )
 
     def test_json_and_markdown_are_deterministic_and_redacted(self):
-        plan = S3MigrationPlanner(
+        planner = S3MigrationPlanner(
             FakeInventory(_inventory()),
             clock=lambda: FIXED_TIME,
-        ).plan(_request())
+        )
+        plan = planner.plan(_request())
+        independent_plan = planner.plan(_request())
 
         first_json = render_json(plan)
-        second_json = render_json(plan)
+        second_json = render_json(independent_plan)
         first_markdown = render_markdown(plan)
-        second_markdown = render_markdown(plan)
+        second_markdown = render_markdown(independent_plan)
 
         self.assertEqual(first_json, second_json)
         self.assertEqual(first_markdown, second_markdown)
         json.loads(first_json)
         self.assertNotIn("123456789012", first_markdown)
         self.assertIn("READY", first_markdown)
+        self.assertIn("Ranked engine candidates", first_markdown)
+        self.assertIn("s3:GetBucketVersioning", first_markdown)
+        self.assertIn("Transfer lower bound", first_markdown)
 
     def test_cloud_operation_allowlist_is_read_only(self):
         mutating_prefixes = (

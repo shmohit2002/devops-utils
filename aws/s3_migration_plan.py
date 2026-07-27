@@ -969,6 +969,10 @@ class S3MigrationPlanner:
                 partition=partition,
                 bucket=request.source_bucket,
             ),
+            "request_estimate": _request_estimate(
+                evidence,
+                engine=engine,
+            ),
             "notice": (
                 "A plan never authorizes transfer or cutover. Inventory is "
                 "point-in-time evidence and must be refreshed before approval."
@@ -1072,6 +1076,42 @@ def _read_policy(*, partition: str, bucket: str) -> dict[str, Any]:
     }
 
 
+def _request_estimate(
+    evidence: dict[str, Any],
+    *,
+    engine: str,
+) -> dict[str, Any]:
+    objects = evidence.get("objects", {})
+    current_count = int(objects.get("current_count", 0))
+    version_count = int(objects.get("version_count", 0))
+    delete_marker_count = int(objects.get("delete_marker_count", 0))
+    version_aware = engine == "s3-replication-and-batch"
+    return {
+        "inventory_actual": evidence.get(
+            "request_summary",
+            {
+                "aws_api_calls": None,
+                "operation_counts": {},
+            },
+        ),
+        "transfer_lower_bound": {
+            "source_items_considered": (
+                version_count + delete_marker_count
+                if version_aware
+                else current_count
+            ),
+            "target_object_writes": (
+                version_count if version_aware else current_count
+            ),
+        },
+        "caveat": (
+            "Lower bounds are routing evidence, not a price quote. Multipart "
+            "behavior, retries, verification, control replication, and "
+            "incremental changes add requests."
+        ),
+    }
+
+
 def render_json(plan: dict[str, Any]) -> str:
     """Render stable, reviewable JSON."""
 
@@ -1089,6 +1129,11 @@ def render_markdown(plan: dict[str, Any]) -> str:
     decision = plan["decision"]
     request = plan["request"]
     objects = plan["evidence"].get("objects", {})
+    request_estimate = plan["request_estimate"]
+    inventory_requests = request_estimate["inventory_actual"].get(
+        "aws_api_calls"
+    )
+    transfer_lower_bound = request_estimate["transfer_lower_bound"]
     lines = [
         "# S3 migration preflight",
         "",
@@ -1124,10 +1169,50 @@ def render_markdown(plan: dict[str, Any]) -> str:
     if not decision["warnings"]:
         lines.append("- None observed.")
 
+    lines.extend(["", "## Ranked engine candidates", ""])
+    lines.extend(
+        f"{item['rank']}. `{item['engine']}` — {item['reason']}"
+        for item in decision["ranked_recommendations"]
+    )
+
+    lines.extend(
+        [
+            "",
+            "## Request and preservation evidence",
+            "",
+            f"- Inventory AWS calls: "
+            f"{inventory_requests if inventory_requests is not None else 'not recorded'}",
+            "- Transfer lower bound: "
+            f"{transfer_lower_bound['source_items_considered']} source item(s) "
+            f"considered and {transfer_lower_bound['target_object_writes']} "
+            "target object write(s).",
+            f"- Estimate caveat: {request_estimate['caveat']}",
+            "- Object transfer does not automatically preserve every bucket "
+            "control, historical version, ACL, timestamp, or system metadata "
+            "field.",
+        ]
+    )
+
     lines.extend(["", "## Required actions", ""])
     lines.extend(
         f"{index}. {action}"
         for index, action in enumerate(decision["required_actions"], start=1)
+    )
+
+    lines.extend(
+        [
+            "",
+            "## Read-only IAM policy",
+            "",
+            "```json",
+            json.dumps(
+                plan["least_privilege_read_policy"],
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            "```",
+        ]
     )
     lines.extend(["", f"> {plan['notice']}", ""])
     return "\n".join(lines)
