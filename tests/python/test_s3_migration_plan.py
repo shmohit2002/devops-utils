@@ -241,6 +241,20 @@ class PlannerDecisionTests(unittest.TestCase):
         self.assertIn("OBJECT_LOCK", blocker_codes)
         self.assertEqual(plan["decision"]["exit_code"], EXIT_BLOCKED)
 
+    def test_mfa_delete_requires_manual_architecture(self):
+        inventory = _inventory()
+        inventory["controls"]["versioning"]["summary"]["mfa_delete"] = "Enabled"
+
+        plan = S3MigrationPlanner(
+            FakeInventory(inventory),
+            clock=lambda: FIXED_TIME,
+        ).plan(_request())
+
+        self.assertIn(
+            "MFA_DELETE",
+            {item["code"] for item in plan["decision"]["blockers"]},
+        )
+
     def test_json_and_markdown_are_deterministic_and_redacted(self):
         plan = S3MigrationPlanner(
             FakeInventory(_inventory()),
@@ -333,12 +347,13 @@ class FixtureAwsRunner:
                     "trailing.",
                     "double__name",
                     "folder/",
+                    "tab\tname",
                     "x" * 901,
-                    *[f"bulk/{index:04d}" for index in range(995)],
+                    *[f"bulk/{index:04d}" for index in range(994)],
                 ]
                 return {
                     "IsTruncated": True,
-                    "NextKeyMarker": "bulk/0994",
+                    "NextKeyMarker": "bulk/0993",
                     "NextVersionIdMarker": "v1",
                     "Versions": [
                         {
@@ -353,13 +368,28 @@ class FixtureAwsRunner:
                     ],
                     "DeleteMarkers": [],
                 }
-            if marker == "bulk/0994":
+            if marker == "bulk/0993":
                 return {
                     "IsTruncated": True,
-                    "NextKeyMarker": "page-two",
+                    "NextKeyMarker": "marker-page",
                     "NextVersionIdMarker": "v2",
                     "Versions": [],
                     "DeleteMarkers": [],
+                }
+            if marker == "marker-page":
+                return {
+                    "IsTruncated": True,
+                    "NextKeyMarker": "page-two",
+                    "NextVersionIdMarker": "d999",
+                    "Versions": [],
+                    "DeleteMarkers": [
+                        {
+                            "Key": f"removed/{index:04d}.txt",
+                            "VersionId": f"d{index}",
+                            "IsLatest": True,
+                        }
+                        for index in range(1000)
+                    ],
                 }
             return {
                 "IsTruncated": False,
@@ -420,7 +450,7 @@ class AwsAdapterTests(unittest.TestCase):
         self.assertNotIn("arn", inventory["caller"])
         self.assertEqual(inventory["objects"]["current_count"], 1001)
         self.assertEqual(inventory["objects"]["version_count"], 1001)
-        self.assertEqual(inventory["objects"]["delete_marker_count"], 1)
+        self.assertEqual(inventory["objects"]["delete_marker_count"], 1001)
         self.assertEqual(inventory["objects"]["current_bytes"], 1019)
         self.assertEqual(inventory["multipart_uploads"]["count"], 1)
         self.assertEqual(inventory["controls"]["encryption"]["state"], "denied")
@@ -463,6 +493,7 @@ class AwsAdapterTests(unittest.TestCase):
         self.assertIn("dot-segment", hazards_by_key["trailing."])
         self.assertIn("repeated-double-underscore", hazards_by_key["double__name"])
         self.assertIn("zero-byte-slash-marker", hazards_by_key["folder/"])
+        self.assertIn("control-character", hazards_by_key["tab\tname"])
         self.assertIn("long-key", hazards_by_key["x" * 901])
 
         version_calls = [
@@ -470,17 +501,18 @@ class AwsAdapterTests(unittest.TestCase):
             for service, operation, parameters in runner.calls
             if operation == "list-object-versions"
         ]
-        self.assertEqual(len(version_calls), 4)
+        self.assertEqual(len(version_calls), 5)
         self.assertNotIn("key_marker", version_calls[0])
         self.assertNotIn("key_marker", version_calls[1])
-        self.assertEqual(version_calls[2]["key_marker"], "bulk/0994")
-        self.assertEqual(version_calls[3]["key_marker"], "page-two")
+        self.assertEqual(version_calls[2]["key_marker"], "bulk/0993")
+        self.assertEqual(version_calls[3]["key_marker"], "marker-page")
+        self.assertEqual(version_calls[4]["key_marker"], "page-two")
         self.assertEqual(retry_delays, [0.25])
         self.assertEqual(
             inventory["request_summary"]["operation_counts"][
                 "s3api:list-object-versions"
             ],
-            4,
+            5,
         )
         self.assertEqual(
             inventory["request_summary"]["aws_api_calls"],
@@ -519,6 +551,37 @@ class AwsAdapterTests(unittest.TestCase):
             "UNKNOWN_CONTROL_FIELDS",
             {item["code"] for item in plan["decision"]["blockers"]},
         )
+
+    def test_versioning_disabled_suspended_and_denied_are_distinct(self):
+        class VersionStateRunner(FixtureAwsRunner):
+            def __init__(self, response):
+                super().__init__()
+                self.response = response
+
+            def call(self, service, operation, parameters):
+                if operation == "get-bucket-versioning":
+                    self.calls.append((service, operation, dict(parameters)))
+                    if isinstance(self.response, Exception):
+                        raise self.response
+                    return self.response
+                return super().call(service, operation, parameters)
+
+        cases = (
+            ({}, "disabled"),
+            ({"Status": "Suspended"}, "suspended"),
+            (AwsCliError("get-bucket-versioning", "AccessDenied"), "denied"),
+        )
+        for response, expected_state in cases:
+            with self.subTest(expected_state=expected_state):
+                inventory = AwsCliInventory(
+                    VersionStateRunner(response),
+                    clock=lambda: FIXED_TIME,
+                    sleep=lambda _: None,
+                ).collect(_request())
+                self.assertEqual(
+                    inventory["controls"]["versioning"]["state"],
+                    expected_state,
+                )
 
     def test_plan_bundle_requires_dot_prefixed_private_directory(self):
         plan = S3MigrationPlanner(
