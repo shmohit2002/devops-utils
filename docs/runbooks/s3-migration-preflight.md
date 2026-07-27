@@ -53,6 +53,14 @@ Treat `AccessDenied` as missing evidence, never as “not configured.” Resolve
 the read permission and rerun. Keep the JSON with the review record; the
 Markdown intentionally omits account IDs and object keys.
 
+The JSON includes an explicit source bucket ARN, actual request counts by AWS
+operation, ranked engine candidates, and a 24-hour expiry. Refresh sooner when
+the bucket is active. New top-level control fields that the installed planner
+does not understand block approval rather than disappearing from the summary.
+Bucket policy identities/resources are not copied into the report; the summary
+retains statement count, principal forms, action services, conditions, and
+negative-policy elements.
+
 ## Required follow-through
 
 1. Review every configured control listed in the evidence. Object-transfer
@@ -60,7 +68,9 @@ Markdown intentionally omits account IDs and object keys.
    ownership, notification, replication, encryption, or tagging semantics.
 2. Select and design the engine. For DataSync, use checksum verification and a
    [task report](https://docs.aws.amazon.com/datasync/latest/userguide/task-reports.html).
-   For historical versions, evaluate CRR plus Batch Replication.
+   DataSync does not preserve historical versions, ACLs, Last-Modified
+   timestamps, or every system metadata field. For historical versions,
+   evaluate CRR plus Batch Replication.
 3. Run an initial transfer while the source remains authoritative, then a
    quiesced catch-up. Re-inventory if writes or configuration changed.
 4. Verify exact keys, sizes, versions, checksums, controls, and application
@@ -73,6 +83,8 @@ Markdown intentionally omits account IDs and object keys.
 
 - Inventory is point-in-time and can be stale before it finishes on a busy
   bucket.
+- Retryable throttling/service failures use at most three attempts with bounded
+  exponential backoff; exhausted reads fail or block rather than loop forever.
 - The planner summarizes metadata returned by version listings; it does not
   download objects or compute content hashes.
 - Directory buckets and newly introduced/unknown controls are not silently

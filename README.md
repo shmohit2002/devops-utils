@@ -24,11 +24,16 @@ the JSON evidence can contain an account ID and sampled object keys.
 The command:
 
 - explicitly pages through versions, delete markers, and multipart uploads;
+- retries throttled reads at most three times and reports request counts;
 - classifies denied, absent, and configured bucket controls separately;
-- recommends DataSync, S3 Replication + Batch Replication, or manual design;
+- redacts policy identities while preserving its structural risk signals;
+- ranks DataSync, S3 Replication + Batch Replication, and verification options;
 - refuses same-name delete/recreate and Object Lock ambiguity;
 - emits deterministic JSON, concise Markdown, and the exact read-only IAM
   policy used by the inventory.
+
+Plans expire after 24 hours and should be refreshed sooner when objects or
+configuration are changing.
 
 Exit codes are `0` ready, `1` tool/auth failure, `2` operator review required,
 and `3` blocked. A plan never authorizes transfer or cutover. See
