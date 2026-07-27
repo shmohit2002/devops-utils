@@ -123,6 +123,24 @@ class PlannerDecisionTests(unittest.TestCase):
             "aws-datasync",
         )
         self.assertEqual(plan["evidence"]["objects"]["current_count"], 2)
+        self.assertEqual(
+            plan["evidence"]["source_bucket_arn"],
+            "arn:aws:s3:::example-source",
+        )
+        self.assertEqual(
+            plan["expires_at"],
+            "2026-07-28T12:00:00+00:00",
+        )
+        ranked = plan["decision"]["ranked_recommendations"]
+        self.assertEqual(
+            [item["rank"] for item in ranked],
+            list(range(1, len(ranked) + 1)),
+        )
+        self.assertEqual(ranked[0], {
+            **plan["decision"]["recommendation"],
+            "rank": 1,
+        })
+        self.assertEqual(ranked[2]["engine"], "rclone-check")
         self.assertIn(
             "A plan never authorizes transfer or cutover.",
             plan["notice"],
@@ -159,6 +177,10 @@ class PlannerDecisionTests(unittest.TestCase):
         self.assertEqual(plan["decision"]["exit_code"], EXIT_REVIEW)
         self.assertEqual(
             plan["decision"]["recommendation"]["engine"],
+            "s3-replication-and-batch",
+        )
+        self.assertEqual(
+            plan["decision"]["ranked_recommendations"][0]["engine"],
             "s3-replication-and-batch",
         )
         self.assertIn(

@@ -16,7 +16,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -754,7 +754,12 @@ class S3MigrationPlanner:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def plan(self, request: MigrationRequest) -> dict[str, Any]:
-        evidence = self._inventory_reader.collect(request)
+        evidence = dict(self._inventory_reader.collect(request))
+        partition = evidence.get("caller", {}).get("partition", "aws")
+        evidence.setdefault(
+            "source_bucket_arn",
+            f"arn:{partition}:s3:::{request.source_bucket}",
+        )
         blockers: list[dict[str, str]] = []
         warnings: list[dict[str, str]] = []
         actions: list[str] = [
@@ -932,24 +937,33 @@ class S3MigrationPlanner:
                 "managed, incremental transfer candidate."
             )
 
+        recommendation = {
+            "engine": engine,
+            "reason": reason,
+        }
+        ranked_recommendations = _ranked_recommendations(
+            recommendation,
+            blocked=bool(blockers),
+            has_history=has_history,
+        )
+        generated_at = self._clock().astimezone(timezone.utc)
         return {
             "schema_version": SCHEMA_VERSION,
-            "generated_at": self._clock().astimezone(timezone.utc).isoformat(),
+            "generated_at": generated_at.isoformat(),
+            "expires_at": (generated_at + timedelta(hours=24)).isoformat(),
             "request": asdict(request),
             "decision": {
                 "status": status,
                 "exit_code": exit_code,
-                "recommendation": {
-                    "engine": engine,
-                    "reason": reason,
-                },
+                "recommendation": recommendation,
+                "ranked_recommendations": ranked_recommendations,
                 "blockers": blockers,
                 "warnings": warnings,
                 "required_actions": actions,
             },
             "evidence": evidence,
             "least_privilege_read_policy": _read_policy(
-                partition=evidence.get("caller", {}).get("partition", "aws"),
+                partition=partition,
                 bucket=request.source_bucket,
             ),
             "notice": (
@@ -957,6 +971,57 @@ class S3MigrationPlanner:
                 "point-in-time evidence and must be refreshed before approval."
             ),
         }
+
+
+def _ranked_recommendations(
+    primary: dict[str, str],
+    *,
+    blocked: bool,
+    has_history: bool,
+) -> list[dict[str, Any]]:
+    recommendations = [primary]
+    if not blocked and has_history:
+        recommendations.extend(
+            [
+                {
+                    "engine": "aws-datasync-current-objects-only",
+                    "reason": (
+                        "Use only if historical versions and delete markers "
+                        "are explicitly out of scope."
+                    ),
+                },
+                {
+                    "engine": "rclone-check",
+                    "reason": (
+                        "Use as an independent read-only verification "
+                        "companion, not as automatic cutover approval."
+                    ),
+                },
+            ]
+        )
+    elif not blocked:
+        recommendations.extend(
+            [
+                {
+                    "engine": "s3-replication-and-batch",
+                    "reason": (
+                        "Prefer when ongoing writes or future version "
+                        "preservation make replication semantics necessary."
+                    ),
+                },
+                {
+                    "engine": "rclone-check",
+                    "reason": (
+                        "Use as an independent read-only verification "
+                        "companion, not as automatic cutover approval."
+                    ),
+                },
+            ]
+        )
+    return [
+        {"rank": index, **candidate}
+        for index, candidate in enumerate(recommendations, start=1)
+    ]
 
 
 def _read_policy(*, partition: str, bucket: str) -> dict[str, Any]:
@@ -1032,6 +1097,7 @@ def render_markdown(plan: dict[str, Any]) -> str:
         f"`{request['target_region']}`",
         f"- Recommended engine: "
         f"`{decision['recommendation']['engine']}`",
+        f"- Plan expires: `{plan['expires_at']}`",
         f"- Current objects: {objects.get('current_count', 0)} "
         f"({objects.get('current_bytes', 0)} bytes)",
         f"- Versions / delete markers: {objects.get('version_count', 0)} / "
