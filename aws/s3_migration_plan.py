@@ -916,18 +916,20 @@ class S3MigrationPlanner:
                 )
             )
 
+        requires_replication = has_history or bool(multipart_count)
         if blockers:
             status = "blocked"
             exit_code = EXIT_BLOCKED
             engine = "manual-architecture"
             reason = "One or more preservation or inventory blockers exist."
-        elif has_history:
+        elif requires_replication:
             status = "review"
             exit_code = EXIT_REVIEW
             engine = "s3-replication-and-batch"
             reason = (
-                "Version-aware native replication is the leading candidate; "
-                "bucket controls and cutover still require review."
+                "Native replication is the leading candidate for version "
+                "history or observed active writes; bucket controls and "
+                "cutover still require review."
             )
         else:
             status = "review" if warnings else "ready"
@@ -945,7 +947,7 @@ class S3MigrationPlanner:
         ranked_recommendations = _ranked_recommendations(
             recommendation,
             blocked=bool(blockers),
-            has_history=has_history,
+            requires_replication=requires_replication,
         )
         generated_at = self._clock().astimezone(timezone.utc)
         return {
@@ -978,10 +980,10 @@ def _ranked_recommendations(
     primary: dict[str, str],
     *,
     blocked: bool,
-    has_history: bool,
+    requires_replication: bool,
 ) -> list[dict[str, Any]]:
     recommendations = [primary]
-    if not blocked and has_history:
+    if not blocked and requires_replication:
         recommendations.extend(
             [
                 {

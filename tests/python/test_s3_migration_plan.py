@@ -31,7 +31,13 @@ def _control(state="absent", **summary):
     return {"state": state, "summary": summary}
 
 
-def _inventory(*, versioned=False, denied_control=None, object_lock=False):
+def _inventory(
+    *,
+    versioned=False,
+    denied_control=None,
+    object_lock=False,
+    multipart_uploads=0,
+):
     controls = {
         name: _control()
         for name in (
@@ -87,7 +93,7 @@ def _inventory(*, versioned=False, denied_control=None, object_lock=False):
             "checksum_algorithm_counts": {"SHA256": 1},
             "key_hazard_samples": [],
         },
-        "multipart_uploads": {"count": 0},
+        "multipart_uploads": {"count": multipart_uploads},
         "controls": controls,
     }
 
@@ -185,6 +191,22 @@ class PlannerDecisionTests(unittest.TestCase):
         )
         self.assertIn(
             "VERSION_HISTORY",
+            {warning["code"] for warning in plan["decision"]["warnings"]},
+        )
+
+    def test_active_writes_route_to_replication_even_without_version_history(self):
+        plan = S3MigrationPlanner(
+            FakeInventory(_inventory(multipart_uploads=2)),
+            clock=lambda: FIXED_TIME,
+        ).plan(_request())
+
+        self.assertEqual(plan["decision"]["status"], "review")
+        self.assertEqual(
+            plan["decision"]["recommendation"]["engine"],
+            "s3-replication-and-batch",
+        )
+        self.assertIn(
+            "ACTIVE_MULTIPART_UPLOADS",
             {warning["code"] for warning in plan["decision"]["warnings"]},
         )
 
